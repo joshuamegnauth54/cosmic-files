@@ -294,32 +294,38 @@ pub fn folder_icon_symbolic(path: &PathBuf, icon_size: u16) -> widget::icon::Han
 }
 
 fn tab_complete(path: &Path) -> Result<Vec<(String, PathBuf)>, Box<dyn Error>> {
-    let parent = if path.exists() {
+    if path.exists() {
         // Do not show completion if already on an existing path
         return Ok(Vec::new());
-    } else {
-        path.parent()
-            .ok_or_else(|| format!("path has no parent {:?}", path))?
-    };
+    } else if let Ok(url) = url::Url::parse(&path.to_string_lossy()) {
+        match url.scheme() {
+            "trash" => return Ok(vec![(fl!("trash"), Location::TRASH_ROOT.into())]),
+            "recents" => return Ok(vec![(fl!("recents"), Location::RECENTS_ROOT.into())]),
+            _ => (),
+        }
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("path has no parent {:?}", path))?;
 
-    let child_os = path.strip_prefix(&parent)?;
+    let child_os = path.strip_prefix(parent)?;
     let child = child_os
         .to_str()
         .ok_or_else(|| format!("invalid UTF-8 {:?}", child_os))?;
 
-    let pattern = format!("^{}", regex::escape(&child));
+    let pattern = format!("^{}", regex::escape(child));
     let regex = regex::RegexBuilder::new(&pattern)
         .case_insensitive(true)
         .build()?;
 
     let mut completions = Vec::new();
-    for entry_res in fs::read_dir(&parent)? {
+    for entry_res in fs::read_dir(parent)? {
         let entry = entry_res?;
         let file_name_os = entry.file_name();
         let Some(file_name) = file_name_os.to_str() else {
             continue;
         };
-        if regex.is_match(&file_name) {
+        if regex.is_match(file_name) {
             completions.push((file_name.to_string(), entry.path()));
         }
     }
@@ -1288,7 +1294,7 @@ pub fn scan_desktop(
             is_mount_point: false,
             metadata,
             hidden: false,
-            location_opt: Some(Location::Trash),
+            location_opt: Some(Location::trash()),
             mime,
             icon_handle_grid,
             icon_handle_list,
@@ -1318,11 +1324,36 @@ pub struct EditLocation {
 impl EditLocation {
     pub fn resolve(&self) -> Option<Location> {
         let Some(selected) = self.selected else {
-            return Some(self.location.clone());
+            println!("In resolve");
+            // return Self::resolve_virtual_location(&self.location)
+            //     .or_else(|| Some(self.location.clone()));
+            let p = Self::resolve_virtual_location(&self.location)
+                .or_else(|| Some(self.location.clone()));
+            println!("Resolve: {p:?}");
+            return p;
         };
         let completions = self.completions.as_ref()?;
         let completion = completions.get(selected)?;
-        Some(self.location.with_path(completion.1.clone()))
+        Self::resolve_virtual_path(&completion.1)
+            .or_else(|| Some(self.location.with_path(completion.1.clone())))
+    }
+
+    fn resolve_virtual_location(loc: &Location) -> Option<Location> {
+        match &loc {
+            Location::Path(path) => Self::resolve_virtual_path(path),
+            Location::Trash(..) | Location::Recents => Some(loc.clone()),
+            _ => None,
+        }
+    }
+
+    fn resolve_virtual_path(path: &Path) -> Option<Location> {
+        url::Url::parse(path.to_str()?)
+            .ok()
+            .and_then(|url| match url.scheme() {
+                "trash" => Some(Location::Trash(url, path.to_owned())),
+                "recents" => Some(Location::Recents),
+                _ => None,
+            })
     }
 
     pub fn select(&mut self, forwards: bool) {
@@ -1365,7 +1396,7 @@ pub enum Location {
     Path(PathBuf),
     Recents,
     Search(PathBuf, String, bool, Instant),
-    Trash,
+    Trash(url::Url, PathBuf),
 }
 
 impl std::fmt::Display for Location {
@@ -1376,14 +1407,17 @@ impl std::fmt::Display for Location {
             }
             Self::Network(uri, ..) => write!(f, "{}", uri),
             Self::Path(path) => write!(f, "{}", path.display()),
-            Self::Recents => write!(f, "recents"),
+            Self::Recents => write!(f, "recent:///"),
             Self::Search(path, term, ..) => write!(f, "search {} for {}", path.display(), term),
-            Self::Trash => write!(f, "trash"),
+            Self::Trash(url, _) => write!(f, "{}", url),
         }
     }
 }
 
 impl Location {
+    const TRASH_ROOT: &str = "trash:///";
+    const RECENTS_ROOT: &str = "recents:///";
+
     pub fn normalize(&self) -> Self {
         if let Some(mut path) = self.path_opt().map(|x| x.to_path_buf()) {
             // Add trailing slash if location is a path
@@ -1413,6 +1447,7 @@ impl Location {
             Self::Desktop(path, ..) => Some(path),
             Self::Path(path) => Some(path),
             Self::Search(path, ..) => Some(path),
+            Self::Trash(_, path) => Some(path),
             _ => None,
         }
     }
@@ -1425,6 +1460,13 @@ impl Location {
             Self::Path(..) => Self::Path(path),
             Self::Search(_, term, show_hidden, time) => {
                 Self::Search(path, term.clone(), *show_hidden, *time)
+            }
+            Self::Trash(..) => {
+                let mut url = url::Url::parse(Self::TRASH_ROOT).unwrap();
+                // TODO: Navigating trash. The paths aren't used anywhere now and the code below
+                // would likely need to change anyway
+                url.set_path(path.to_str().unwrap_or("/"));
+                Self::Trash(url, path)
             }
             other => other.clone(),
         }
@@ -1440,7 +1482,7 @@ impl Location {
                 // Search is done incrementally
                 Vec::new()
             }
-            Self::Trash => scan_trash(sizes),
+            Self::Trash(..) => scan_trash(sizes),
             Self::Recents => scan_recents(sizes),
             Self::Network(uri, _) => scan_network(uri, sizes),
         };
@@ -1473,7 +1515,7 @@ impl Location {
                 let (name, _) = folder_name(path);
                 format!("Search \"{}\": {}", term, name)
             }
-            Self::Trash => {
+            Self::Trash(..) => {
                 fl!("trash")
             }
             Self::Recents => {
@@ -1481,6 +1523,18 @@ impl Location {
             }
             Self::Network(_uri, display_name) => display_name.clone(),
         }
+    }
+
+    pub fn is_virtual(&self) -> bool {
+        matches!(self, Location::Trash(..) | Location::Recents)
+    }
+
+    /// [`Location`] pointing to the root trash virtual path.
+    pub fn trash() -> Self {
+        Location::Trash(
+            url::Url::parse(Location::TRASH_ROOT).unwrap(),
+            PathBuf::from(Location::TRASH_ROOT),
+        )
     }
 }
 
@@ -3787,7 +3841,7 @@ impl Tab {
                         }
                         commands.push(Command::DropFiles(to, from))
                     }
-                    Location::Trash if matches!(from.kind, ClipboardKind::Cut { .. }) => {
+                    Location::Trash(..) if matches!(from.kind, ClipboardKind::Cut { .. }) => {
                         commands.push(Command::Delete(from.paths))
                     }
                     _ => {
@@ -3873,7 +3927,7 @@ impl Tab {
                     Location::Path(path) => {
                         commands.push(Command::OpenFile(vec![path]));
                     }
-                    Location::Trash => {
+                    Location::Trash(..) => {
                         commands.push(Command::OpenTrash);
                     }
                     _ => {}
@@ -3890,7 +3944,10 @@ impl Tab {
                     }
                 }
                 if location != self.location || selected_paths.is_some() {
-                    if location.path_opt().map_or(true, |path| path.is_dir()) {
+                    if location
+                        .path_opt()
+                        .map_or(true, |path| path.is_dir() || location.is_virtual())
+                    {
                         if selected_paths.is_none() {
                             selected_paths = self
                                 .location
@@ -4310,7 +4367,7 @@ impl Tab {
 
         let heading_row = widget::row::with_children(vec![
             heading_item(fl!("name"), Length::Fill, HeadingOptions::Name),
-            if self.location == Location::Trash {
+            if let Location::Trash(..) = self.location {
                 heading_item(
                     fl!("trashed-on"),
                     Length::Fixed(modified_width),
@@ -4494,11 +4551,12 @@ impl Tab {
                 }
                 children.reverse();
             }
-            Location::Trash => {
+            Location::Trash(..) => {
                 children.push(
                     widget::button::custom(widget::text::heading(fl!("trash")))
                         .padding(space_xxxs)
-                        .on_press(Message::Location(Location::Trash))
+                        // TODO: Navigating trashed folders
+                        .on_press(Message::Location(Location::trash()))
                         .class(theme::Button::Text)
                         .into(),
                 );
@@ -5405,7 +5463,7 @@ impl Tab {
             tab_column = tab_column.push(popover);
         }
         match &self.location {
-            Location::Trash => {
+            Location::Trash(..) => {
                 if let Some(items) = self.items_opt() {
                     if !items.is_empty() {
                         tab_column = tab_column.push(

@@ -118,7 +118,7 @@ pub fn context_menu<'a>(
                     selected_dir += 1;
                 }
                 match &item.location_opt {
-                    Some(Location::Trash) => selected_trash_only = true,
+                    Some(Location::Trash(..)) => selected_trash_only = true,
                     Some(Location::Path(path)) => {
                         if selected == 1
                             && path.extension().and_then(|s| s.to_str()) == Some("desktop")
@@ -343,7 +343,7 @@ pub fn context_menu<'a>(
                 children.push(sort_item(fl!("sort-by-size"), HeadingOptions::Size));
             }
         }
-        (_, Location::Trash) => {
+        (_, Location::Trash(..)) => {
             if tab.mode.multiple() {
                 children.push(menu_item(fl!("select-all"), Action::SelectAll).into());
             }
@@ -402,7 +402,7 @@ pub fn dialog_menu(
             Action::SetSort(sort, dir),
         )
     };
-    let in_trash = tab.location == Location::Trash;
+    let in_trash = matches!(tab.location, Location::Trash(..));
 
     let mut selected_gallery = 0;
     if let Some(items) = tab.items_opt() {
@@ -551,7 +551,7 @@ pub fn menu_bar<'a>(
             Action::SetSort(sort, dir),
         )
     };
-    let in_trash = tab_opt.map_or(false, |tab| tab.location == Location::Trash);
+    let in_trash = tab_opt.map_or(false, |tab| matches!(tab.location, Location::Trash(..)));
 
     let mut selected_dir = 0;
     let mut selected = 0;

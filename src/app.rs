@@ -1107,8 +1107,8 @@ impl App {
         let mut needs_reload = Vec::new();
         for entity in self.tab_model.iter() {
             if let Some(tab) = self.tab_model.data::<Tab>(entity) {
-                if let Location::Trash = &tab.location {
-                    needs_reload.push((entity, Location::Trash));
+                if let Location::Trash(..) = &tab.location {
+                    needs_reload.push((entity, Location::trash()));
                 }
             }
         }
@@ -1312,7 +1312,7 @@ impl App {
         nav_model = nav_model.insert(|b| {
             b.text(fl!("trash"))
                 .icon(widget::icon::icon(tab::trash_icon_symbolic(16)))
-                .data(Location::Trash)
+                .data(Location::trash())
                 .divider_above()
         });
 
@@ -2132,7 +2132,7 @@ impl Application for App {
                 NavMenuAction::RemoveFromSidebar(entity),
             ));
         }
-        if matches!(location_opt, Some(Location::Trash)) {
+        if matches!(location_opt, Some(Location::Trash(..))) {
             if tab::trash_entries() > 0 {
                 items.push(cosmic::widget::menu::Item::Button(
                     fl!("empty-trash"),
@@ -2371,7 +2371,7 @@ impl Application for App {
                 let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
                 if let Some(tab) = self.tab_model.data::<Tab>(entity) {
                     match &tab.location {
-                        Location::Trash => {
+                        Location::Trash(..) => {
                             if let Some(items) = tab.items_opt() {
                                 let mut trash_items = Vec::new();
                                 for item in items.iter() {
@@ -3302,7 +3302,7 @@ impl Application for App {
                 let maybe_entity = self.nav_model.iter().find(|&entity| {
                     self.nav_model
                         .data::<Location>(entity)
-                        .map(|loc| matches!(loc, Location::Trash))
+                        .map(|loc| matches!(loc, Location::Trash(..)))
                         .unwrap_or_default()
                 });
                 if let Some(entity) = maybe_entity {
@@ -3755,7 +3755,7 @@ impl Application for App {
                 let icon_sizes = self.config.tab.icon_sizes;
 
                 return cosmic::task::future(async move {
-                    match tokio::task::spawn_blocking(move || Location::Trash.scan(icon_sizes))
+                    match tokio::task::spawn_blocking(move || Location::trash().scan(icon_sizes))
                         .await
                     {
                         Ok((_parent_item_opt, items)) => {
@@ -3898,7 +3898,7 @@ impl Application for App {
                                 paths: data.paths,
                             },
                         )),
-                        Location::Trash if matches!(action, DndAction::Move) => {
+                        Location::Trash(..) if matches!(action, DndAction::Move) => {
                             self.delete(data.paths)
                         }
                         _ => {
@@ -3958,7 +3958,7 @@ impl Application for App {
                                 paths: data.paths,
                             },
                         )),
-                        Location::Trash if matches!(action, DndAction::Move) => {
+                        Location::Trash(..) if matches!(action, DndAction::Move) => {
                             self.delete(data.paths)
                         }
                         _ => {
@@ -4050,8 +4050,12 @@ impl Application for App {
                         Some(Location::Recents) => {
                             return self.open_tab(Location::Recents, false, None);
                         }
-                        Some(Location::Trash) => {
-                            return self.open_tab(Location::Trash, false, None);
+                        Some(Location::Trash(ref uri, ref real)) => {
+                            return self.open_tab(
+                                Location::Trash(uri.clone(), real.clone()),
+                                false,
+                                None,
+                            );
                         }
                         _ => {}
                     }
@@ -4067,7 +4071,8 @@ impl Application for App {
                                     Location::Path(path) => {
                                         command.arg(path);
                                     }
-                                    Location::Trash => {
+                                    Location::Trash(_uri, _real) => {
+                                        // TODO: Launch with trash location
                                         command.arg("--trash");
                                     }
                                     Location::Network(..) => {

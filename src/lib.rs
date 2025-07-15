@@ -103,7 +103,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             daemonize = false;
             continue;
         } else if &arg == "--trash" {
-            Location::Trash
+            Location::trash()
         } else if &arg == "--recents" {
             Location::Recents
         } else if &arg == "--network" {
